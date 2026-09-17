@@ -27,6 +27,10 @@ const THEME_SCRIPT = `
 try {
   var t = localStorage.getItem('nd-tema');
   if (t) document.documentElement.setAttribute('data-theme', t);
+  var tg = localStorage.getItem('nd-texto-grande');
+  if (tg) document.documentElement.setAttribute('data-texto-grande', tg);
+  var rm = localStorage.getItem('nd-reducir-movimiento');
+  if (rm) document.documentElement.setAttribute('data-reducir-movimiento', rm);
 } catch (e) {}
 `
 

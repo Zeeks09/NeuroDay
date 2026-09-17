@@ -175,3 +175,17 @@ a {
   min-height: var(--min-touch);
   min-width: var(--min-touch);
 }
+
+/* Accesibilidad (Perfil > Ajustes) */
+:root[data-texto-grande="true"] {
+  font-size: 112%;
+}
+
+:root[data-reducir-movimiento="true"] *,
+:root[data-reducir-movimiento="true"] *::before,
+:root[data-reducir-movimiento="true"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}

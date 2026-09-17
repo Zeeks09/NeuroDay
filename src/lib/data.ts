@@ -2,7 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
-import type { DosisExtra, Medicacion, MedicacionTomada, RegistroDia } from '@/lib/types'
+import type { DosisExtra, Medicacion, MedicacionTomada, RegistroDia, Diagnostico, Profesional, Documento, Preferencias, Estadisticas, EstadisticasDia } from '@/lib/types'
 
 function today(): string {
   const d = new Date()
@@ -157,4 +157,184 @@ export async function guardarYCompletar(input: {
 }): Promise<{ racha: number }> {
   await guardarRegistro(input)
   return completarRegistroHoy()
+}
+
+// ---------- Datos (estadísticas) ----------
+
+export async function getEstadisticas(): Promise<Estadisticas> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('registros_dia')
+    .select('fecha, foco, sueno_horas, completado')
+    .order('fecha', { ascending: false })
+    .limit(30)
+  if (error) throw error
+
+  const dias: EstadisticasDia[] = (data ?? []).map((d) => ({
+    fecha: d.fecha as string,
+    foco: d.foco as number | null,
+    sueno_horas: d.sueno_horas as number | null,
+    completado: d.completado as boolean,
+  }))
+
+  const ultimos7 = dias.slice(0, 7)
+  const ultimos21 = dias.slice(0, 21)
+
+  const focoVals = ultimos7.map((d) => d.foco).filter((v): v is number => v !== null)
+  const suenoVals = ultimos7.map((d) => d.sueno_horas).filter((v): v is number => v !== null)
+
+  const focoMedio7 = focoVals.length ? focoVals.reduce((a, b) => a + b, 0) / focoVals.length : null
+  const suenoMedio7 = suenoVals.length ? suenoVals.reduce((a, b) => a + b, 0) / suenoVals.length : null
+
+  const adherencia7 = ultimos7.length
+    ? Math.round((ultimos7.filter((d) => d.completado).length / 7) * 100)
+    : 0
+  const adherencia21 = ultimos21.length
+    ? Math.round((ultimos21.filter((d) => d.completado).length / 21) * 100)
+    : 0
+
+  return {
+    dias: dias.reverse(),
+    focoMedio7,
+    suenoMedio7,
+    adherencia7,
+    adherencia21,
+    diasConDatos: dias.filter((d) => d.completado).length,
+  }
+}
+
+// ---------- Diagnóstico ----------
+
+export async function getDiagnostico(): Promise<Diagnostico | null> {
+  const supabase = await createClient()
+  const { data: userData } = await supabase.auth.getUser()
+  if (!userData.user) throw new Error('No autenticado')
+  const { data, error } = await supabase
+    .from('diagnostico')
+    .select('tipo, fecha, verificado, notas')
+    .eq('user_id', userData.user.id)
+    .maybeSingle()
+  if (error) throw error
+  return (data as Diagnostico | null) ?? null
+}
+
+export async function guardarDiagnostico(input: { tipo: Diagnostico['tipo']; fecha: string | null; notas: string | null }) {
+  const supabase = await createClient()
+  const { data: userData } = await supabase.auth.getUser()
+  if (!userData.user) throw new Error('No autenticado')
+  const { error } = await supabase
+    .from('diagnostico')
+    .upsert({ user_id: userData.user.id, ...input, updated_at: new Date().toISOString() })
+  if (error) throw error
+  revalidatePath('/historial')
+}
+
+// ---------- Profesionales ----------
+
+export async function getProfesionales(): Promise<Profesional[]> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('profesionales')
+    .select('id, nombre, especialidad, telefono, notas')
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return data ?? []
+}
+
+export async function addProfesional(input: { nombre: string; especialidad: string | null; telefono: string | null; notas: string | null }) {
+  const supabase = await createClient()
+  const { data: userData } = await supabase.auth.getUser()
+  if (!userData.user) throw new Error('No autenticado')
+  const { error } = await supabase.from('profesionales').insert({ user_id: userData.user.id, ...input })
+  if (error) throw error
+  revalidatePath('/historial')
+}
+
+export async function eliminarProfesional(id: string) {
+  const supabase = await createClient()
+  const { error } = await supabase.from('profesionales').delete().eq('id', id)
+  if (error) throw error
+  revalidatePath('/historial')
+}
+
+// ---------- Documentos ----------
+
+export async function getDocumentos(): Promise<Documento[]> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('documentos')
+    .select('id, nombre, storage_path, tipo, created_at')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data ?? []
+}
+
+export async function subirDocumento(formData: FormData) {
+  const supabase = await createClient()
+  const { data: userData } = await supabase.auth.getUser()
+  if (!userData.user) throw new Error('No autenticado')
+  const file = formData.get('archivo') as File | null
+  if (!file || file.size === 0) throw new Error('Elegí un archivo')
+
+  const path = `${userData.user.id}/${Date.now()}_${file.name}`
+  const { error: upErr } = await supabase.storage.from('documentos').upload(path, file)
+  if (upErr) throw upErr
+
+  const { error: dbErr } = await supabase.from('documentos').insert({
+    user_id: userData.user.id,
+    nombre: file.name,
+    storage_path: path,
+    tipo: file.type || null,
+  })
+  if (dbErr) throw dbErr
+  revalidatePath('/historial')
+}
+
+export async function getUrlDocumento(storagePath: string): Promise<string> {
+  const supabase = await createClient()
+  const { data, error } = await supabase.storage.from('documentos').createSignedUrl(storagePath, 60 * 5)
+  if (error) throw error
+  return data.signedUrl
+}
+
+export async function eliminarDocumento(id: string, storagePath: string) {
+  const supabase = await createClient()
+  await supabase.storage.from('documentos').remove([storagePath])
+  const { error } = await supabase.from('documentos').delete().eq('id', id)
+  if (error) throw error
+  revalidatePath('/historial')
+}
+
+// ---------- Preferencias ----------
+
+export async function getPreferencias(): Promise<Preferencias> {
+  const supabase = await createClient()
+  const { data: userData } = await supabase.auth.getUser()
+  if (!userData.user) throw new Error('No autenticado')
+  const { data, error } = await supabase
+    .from('preferencias')
+    .select('aviso_toma, aviso_receta, aviso_cita, texto_grande, reducir_movimiento')
+    .eq('user_id', userData.user.id)
+    .maybeSingle()
+  if (error) throw error
+  return (
+    (data as Preferencias | null) ?? {
+      aviso_toma: true,
+      aviso_receta: true,
+      aviso_cita: true,
+      texto_grande: false,
+      reducir_movimiento: false,
+    }
+  )
+}
+
+export async function guardarPreferencias(input: Preferencias) {
+  const supabase = await createClient()
+  const { data: userData } = await supabase.auth.getUser()
+  if (!userData.user) throw new Error('No autenticado')
+  const { error } = await supabase
+    .from('preferencias')
+    .upsert({ user_id: userData.user.id, ...input, updated_at: new Date().toISOString() })
+  if (error) throw error
+  revalidatePath('/perfil')
 }
